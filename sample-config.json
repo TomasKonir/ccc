@@ -1,0 +1,23 @@
+{
+	"sshKeyPath" : "/home/user/.ssh/id_ecdsa",
+	 "colors" : {
+                "ONLINE"    : "green",
+                "OFFLINE"   : "red",
+                "skynet"    : "blue",
+                "genisys"   : "purple",
+                "container" : "cyan",
+		"localhost" : "brown"
+        },
+	"hosts" : [
+		{
+			"virsh"    : false,
+			"hostname" : "skynet",
+			"address"  : "172.16.42.9"
+		},
+		{
+			"virsh"    : true,
+			"hostname" : "localhost",
+			"address"  : "127.0.0.1"
+		}
+	]
+}
