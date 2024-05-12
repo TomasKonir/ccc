@@ -1,4 +1,5 @@
 #include <libssh/libssh.h>
+#include <libssh/callbacks.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -123,6 +124,7 @@ bool sshConnect(const QJsonArray& hosts) {
         ssh->connected = false;
         ssh_options_set(ssh->session, SSH_OPTIONS_HOST, ssh->addr.toUtf8().constData());
         ssh_options_set(ssh->session, SSH_OPTIONS_USER, "root");
+        ssh_options_set(ssh->session, SSH_OPTIONS_LOG_VERBOSITY_STR, "SSH_LOG_NOLOG");
         ssh_set_blocking(ssh->session, 0);
         rc = ssh_connect(ssh->session);
         if (rc != SSH_AGAIN) {
@@ -794,7 +796,7 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
                 for (QString img : m->vmImageList) {
                     QStringList params = QStringList({"rsync", "-aAXpx", "-e", "\"ssh -T -o Compression=no -x\"", "--info=progress2", "--numeric-ids",
                                                       "--inplace", img, "root@" + target->addr + ":" + dstDir});
-                    qStdOut() << "Backup image: " << img << "to:" << target->name << ":" << dstDir << "\n";
+                    qStdOut() << "Backup image: " << img << " to: " << target->name << ":" << dstDir << "\n";
                     qStdOut().flush();
                     runSshInteractive(m->ssh, params);
                 }
@@ -1446,9 +1448,15 @@ int processCommand(QStringList args) {
     return (0);
 }
 
+void log_callback(int level, const char* function, const char* msg, void* userdata){
+//    qInfo() << "ssh log" << level << msg;
+}
+
 int main(int argc, char* argv[]) {
     QCoreApplication a(argc, argv);
     QStringList args = a.arguments();
+
+    ssh_set_log_callback(log_callback);
 
     if (args.contains("-h")) {
         qStdOut() << "Usage: " << args.first() << HELP_BASE << HELP_COMMANDS;
