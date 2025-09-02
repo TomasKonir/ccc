@@ -1,5 +1,5 @@
-#include <libssh/libssh.h>
 #include <libssh/callbacks.h>
+#include <libssh/libssh.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -44,6 +44,8 @@
 #define COLOR_BROWN "\033[0;33m"
 #define COLOR_OFF "\033[0m"
 #define BACKGROUND_BLUE "\033[48;5;17m"
+
+#define RSYNC_VANISHED 24
 
 const QByteArray defaultConfig =
     "{ \"sshKeyPath\" : \"/root/.ssh/id_ecdsa\", \"hosts\" : [ {\"virsh\" : true, \"hostname\" : \"localhost\", \"address\" : \"127.0.0.1\"} ] }";
@@ -665,14 +667,14 @@ bool askYes(QString question) {
     return (true);
 }
 
-bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir = "") {
+bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir = "", bool vanishedOk = false) {
     bool ret = true;
 
-    qStdOut() << "Backup from: " << m->name << ":" << m->ssh->name << "\n";
+    qStdOut() << "Backup from: " << m->ssh->name << ":" << m->name << "\n";
     qStdOut().flush();
     foreach (auto target, sshConnList) {
         bool skip = false;
-        if (target->addr == m->ssh->addr) {
+        if (target->addr == m->ssh->addr && targetDir.length() == 0) {
             continue;
         }
         if (target->arch != m->ssh->arch && targetDir.length() == 0) {
@@ -734,7 +736,8 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
 
         if (m->type == "container") {
             QStringList params = QStringList({"rsync", "-aAXpx", "-e", "\"ssh -T -o Compression=no -x\"", "--info=progress2", "--numeric-ids", "--no-devices",
-                                              "--delete", m->containerPath + "/", "root@" + target->addr + ":" + dstDir});
+                                              "--delete", "--inplace", "--compress", "--compress-choice=zstd", "--compress-level=5", m->containerPath + "/",
+                                              "root@" + target->addr + ":" + dstDir});
 
             qStdOut() << "Backup to: " << target->name << ":" << dstDir << "\n";
             qStdOut().flush();
@@ -742,9 +745,15 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
             runSshInteractive(m->ssh, params);
 
             if (lastExitCode != 0) {
-                ret = false;
+                if (lastExitCode != RSYNC_VANISHED && vanishedOk == false) {
+                    ret = false;
+                } else {
+                    runSsh(target, {"touch", targetDir + "/" + m->name + "/backup.touch"});
+                }
                 qInfo() << "Backup:" << m->name << "to" << target->name << "FAILED" << lastExitCode;
                 qInfo() << params;
+            } else {
+                runSsh(target, {"touch", targetDir + "/" + m->name + "/backup.touch"});
             }
             if (targetDir.length()) {
                 runSsh(m->ssh, {"scp", "/etc/systemd/nspawn/" + m->name + ".nspawn", "root@" + target->addr + ":" + targetDir + "/" + m->name + "/"});
@@ -754,8 +763,7 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
             }
             if (lastExitCode) {
                 ret = false;
-                qInfo() << "Backup of nspawn config file failed"
-                        << "/etc/systemd/nspawn/" + m->name + ".nspawn";
+                qInfo() << "Backup of nspawn config file failed" << "/etc/systemd/nspawn/" + m->name + ".nspawn";
             }
             runSsh(m->ssh, {"test", "-f", "/etc/systemd/system/systemd-nspawn@" + m->name + ".service.d/override.conf"});
             if (lastExitCode == 0) {
@@ -768,8 +776,7 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
                 }
                 if (lastExitCode) {
                     ret = false;
-                    qInfo() << "Backup of nspawn service file failed"
-                            << "/etc/systemd/system/systemd-nspawn@" + m->name + ".service.d/override.conf";
+                    qInfo() << "Backup of nspawn service file failed" << "/etc/systemd/system/systemd-nspawn@" + m->name + ".service.d/override.conf";
                 }
             }
         } else {
@@ -781,8 +788,9 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
             }
             if (targetDir.length() == 0) {
                 for (QString img : m->vmImageList) {
-                    QStringList params = QStringList({"rsync", "-aAXpx", "-e", "\"ssh -T -o Compression=no -x\"", "--info=progress2", "--numeric-ids",
-                                                      "--inplace", img, "root@" + target->addr + ":" + img});
+                    QStringList params = QStringList({"rsync", "-aAXpx", "-e", "\"ssh -T -o Compression=no -x\"", "--progress", "--numeric-ids", "--whole-file",
+                                                      "--no-devices", "--delete", "--inplace", "--compress", "--compress-choice=zstd", "--compress-level=5",
+                                                      img, "root@" + target->addr + ":" + img});
                     qStdOut() << "Backup image: " << img << "to:" << target->name << "\n";
                     qStdOut().flush();
                     runSshInteractive(m->ssh, params);
@@ -794,8 +802,9 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
                 }
             } else {
                 for (QString img : m->vmImageList) {
-                    QStringList params = QStringList({"rsync", "-aAXpx", "-e", "\"ssh -T -o Compression=no -x\"", "--info=progress2", "--numeric-ids",
-                                                      "--inplace", img, "root@" + target->addr + ":" + dstDir});
+                    QStringList params = QStringList({"rsync", "-aAXpx", "-e", "\"ssh -T -o Compression=no -x\"", "--progress", "--numeric-ids", "--whole-file",
+                                                      "--no-devices", "--delete", "--inplace", "--compress", "--compress-choice=zstd", "--compress-level=5",
+                                                      img, "root@" + target->addr + ":" + dstDir});
                     qStdOut() << "Backup image: " << img << " to: " << target->name << ":" << dstDir << "\n";
                     qStdOut().flush();
                     runSshInteractive(m->ssh, params);
@@ -1383,7 +1392,7 @@ int processCommand(QStringList args) {
             return (-1);
         }
         if (m->type == "container") {
-            if (!backupMachine(m, t)) {
+            if (!backupMachine(m, t, "", true)) {
                 qInfo() << "Live backup failed" << name;
                 return (-1);
             }
@@ -1403,6 +1412,10 @@ int processCommand(QStringList args) {
             return -1;
         }
 
+        //reload machine list
+        getMachineList();
+        //find again
+        m = findMachine(name);
         // rename target and enable if needed
         if (m->type == "container") {
             if (!renameMachine(name, name + ".backup", m->ssh)) {
@@ -1448,8 +1461,8 @@ int processCommand(QStringList args) {
     return (0);
 }
 
-void log_callback(int level, const char* function, const char* msg, void* userdata){
-//    qInfo() << "ssh log" << level << msg;
+void log_callback(int level, const char* function, const char* msg, void* userdata) {
+    //    qInfo() << "ssh log" << level << msg;
 }
 
 int main(int argc, char* argv[]) {
