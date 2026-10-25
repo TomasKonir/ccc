@@ -17,24 +17,29 @@
 #include <QtConcurrent>
 
 #define HELP_BASE " [-c CONFIG] [-a] [-y] [-n] [-e]\n"
-#define HELP_COMMANDS                                                                                                          \
-    "  help    (self explanable) \n"                                                                                           \
-    "  list    (default command) \n"                                                                                           \
-    "  hosts   (basic hosts info) \n"                                                                                          \
-    "  start   CONTAINER[s] | VM[s]\n"                                                                                         \
-    "  stop    CONTAINER[s] | VM[s]\n"                                                                                         \
-    "  kill    CONTAINER[s] | VM[s]\n"                                                                                         \
-    "  restart CONTAINER[s] | VM[s]\n"                                                                                         \
-    "  enable  CONTAINER[s] | VM[s]\n"                                                                                         \
-    "  disable CONTAINER[s] | VM[s]\n"                                                                                         \
-    "  remove  CONTAINER[s] | VM[s]\n"                                                                                         \
-    "  rename  CONTAINER    | VM    NEW_NAME\n"                                                                                \
-    "  spread  CONTAINER[s] | VM[s]             (create copy named CONTAINER.backup on all hosts with same arch in cluster)\n" \
-    "  backup  CONTAINER[s] | VM[s] MACHINE:DIR (backup container or VM to dst DIR using rsync)\n"                             \
-    "  move    CONTAINER    | VM    TARGET      (move container to TARGET and rename old container as CONTAINER.backup)\n"     \
-    "  clone   CONTAINER            CLONE_NAME  (clone container as new)\n"                                                    \
-    "  exec    CONTAINER[s]         cmd...parms (run command in container)\n"                                                  \
-    "  shell   (connect to hosts and wait for commands)\n"
+#define HELP_COMMANDS                                                                       \
+    "  help         (self explanable), [s] and (s) are lists, separated by ',' \n"          \
+    "  list         (default command) \n"                                                   \
+    "  hosts        (basic hosts info) \n"                                                  \
+    "  start        CONTAINER[s] | VM[s]\n"                                                 \
+    "  stop         CONTAINER[s] | VM[s]\n"                                                 \
+    "  kill         CONTAINER[s] | VM[s]\n"                                                 \
+    "  restart      CONTAINER[s] | VM[s]\n"                                                 \
+    "  enable       CONTAINER[s] | VM[s]\n"                                                 \
+    "  disable      CONTAINER[s] | VM[s]\n"                                                 \
+    "  remove       CONTAINER[s] | VM[s]\n"                                                 \
+    "  rename       CONTAINER    | VM    NEW_NAME\n"                                        \
+    "  spread       CONTAINER[s] | VM[s]             (create copy named "                   \
+    "CONTAINER.backup on all hosts with same arch in cluster)\n"                            \
+    "  backup       CONTAINER[s] | VM[s] MACHINE:DIR(s) (backup container or VM to dst "    \
+    "DIR using rsync)\n"                                                                    \
+    "  backup-safe  CONTAINER[s] MACHINE:DIR(s) SERVICE[s] (backup container or VM to dst " \
+    "DIR using rsync, and stop services before second pass)\n"                              \
+    "  move         CONTAINER    | VM    TARGET      (move container to TARGET and "        \
+    "rename old container as CONTAINER.backup)\n"                                           \
+    "  clone        CONTAINER            CLONE_NAME  (clone container as new)\n"            \
+    "  exec         CONTAINER[s]         cmd...parms (run command in container)\n"          \
+    "  shell        (connect to hosts and wait for commands)\n"
 
 #define COLOR_GRN "\033[0;32m"
 #define COLOR_RED "\033[0;31m"
@@ -48,7 +53,8 @@
 #define RSYNC_VANISHED 24
 
 const QByteArray defaultConfig =
-    "{ \"sshKeyPath\" : \"/root/.ssh/id_ecdsa\", \"hosts\" : [ {\"virsh\" : true, \"hostname\" : \"localhost\", \"address\" : \"127.0.0.1\"} ] }";
+    "{ \"sshKeyPath\" : \"/root/.ssh/id_ecdsa\", \"hosts\" : [ {\"virsh\" : "
+    "true, \"hostname\" : \"localhost\", \"address\" : \"127.0.0.1\"} ] }";
 
 typedef struct {
     qreal total;
@@ -92,14 +98,16 @@ bool showBackups = false;
 bool showextended = false;
 bool dontAsk = false;
 bool allNo = false;
-static int lastExitCode = 0;
+static uint32_t lastExitCode = 0;
 
 QByteArray runSsh(ssh_t* ssh, QStringList params, bool interactive = false, QByteArray data = QByteArray());
 
 QFile& qStdIn() {
     static QFile in;
     if (!in.isOpen()) {
-        in.open(stdin, QIODevice::ReadOnly | QIODevice::Unbuffered);
+        if (!in.open(stdin, QIODevice::ReadOnly | QIODevice::Unbuffered)) {
+            exit(-1);
+        }
     }
     return in;
 }
@@ -276,7 +284,7 @@ QByteArray runSsh(ssh_t* ssh, QStringList params, bool interactive, QByteArray d
     channel = ssh_channel_new(ssh->session);
     if (channel == nullptr) {
         qInfo() << "SSH channel failed:" << ssh->name;
-        lastExitCode = -1;
+        lastExitCode = 1;
         return (ret);
     }
     int rc = ssh_channel_open_session(channel);
@@ -291,12 +299,12 @@ QByteArray runSsh(ssh_t* ssh, QStringList params, bool interactive, QByteArray d
         int columns = qEnvironmentVariableIntValue("COLUMNS");
         rc = ssh_channel_request_pty(channel);
         if (rc != SSH_OK) {
-            lastExitCode = -1;
+            lastExitCode = 1;
             return (ret);
         }
         rc = ssh_channel_change_pty_size(channel, columns, lines);
         if (rc != SSH_OK) {
-            lastExitCode = -1;
+            lastExitCode = 1;
             return (ret);
         }
         tcgetattr(0, &termios_saved);
@@ -308,7 +316,7 @@ QByteArray runSsh(ssh_t* ssh, QStringList params, bool interactive, QByteArray d
     do {
         char buf[1024];
         int len = ssh_channel_read_timeout(channel, buf, 1024, 0, 10);
-        if (len) {
+        if (len > 0) {
             if (interactive) {
                 // qInfo() << "read:" << buf;
                 qStdOut() << QByteArray(buf, len);
@@ -318,7 +326,7 @@ QByteArray runSsh(ssh_t* ssh, QStringList params, bool interactive, QByteArray d
             }
         }
         len = ssh_channel_read_timeout(channel, buf, 1024, 1, 10);
-        if (len) {
+        if (len > 0) {
             if (interactive) {
                 qStdErr() << QByteArray(buf, len);
                 qStdErr().flush();
@@ -345,7 +353,11 @@ QByteArray runSsh(ssh_t* ssh, QStringList params, bool interactive, QByteArray d
         tcsetattr(0, 0, &termios_saved);
     }
     ssh_channel_send_eof(channel);
-    lastExitCode = ssh_channel_get_exit_status(channel);
+    int ok = ssh_channel_get_exit_state(channel, &lastExitCode, nullptr, nullptr);
+    if (ok != SSH_OK) {
+        qStdErr() << "Unable to get last exit code";
+        lastExitCode = 197;
+    }
     ssh_channel_close(channel);
     ssh_channel_free(channel);
     return (ret);
@@ -356,26 +368,26 @@ bool runSshInteractive(ssh_t* ssh, const QStringList& params) {
     channel = ssh_channel_new(ssh->session);
     if (channel == nullptr) {
         qInfo() << "SSH channel failed:" << ssh->name;
-        lastExitCode = -1;
+        lastExitCode = 1;
         return (false);
     }
     int rc = ssh_channel_open_session(channel);
     if (rc != SSH_OK) {
         ssh_channel_free(channel);
-        lastExitCode = -1;
+        lastExitCode = 1;
         return (false);
     }
     ssh_channel_request_exec(channel, params.join(" ").toUtf8().constData());
     if (rc != SSH_OK) {
         ssh_channel_free(channel);
-        lastExitCode = -1;
+        lastExitCode = 1;
         return (false);
     }
     char buf[1024];
     QString out;
     do {
         int len = ssh_channel_read_timeout(channel, buf, 1024, 0, 50);
-        if (len) {
+        if (len > 0) {
             out = QString::fromUtf8(buf, len);
             if (!out.startsWith("skipping")) {
                 qStdOut() << out;
@@ -383,7 +395,7 @@ bool runSshInteractive(ssh_t* ssh, const QStringList& params) {
             }
         }
         len = ssh_channel_read_timeout(channel, buf, 1024, 1, 50);
-        if (len) {
+        if (len > 0) {
             out = QString::fromUtf8(buf, len);
             if (!out.startsWith("skipping")) {
                 qStdErr() << out;
@@ -392,7 +404,11 @@ bool runSshInteractive(ssh_t* ssh, const QStringList& params) {
         }
     } while (!ssh_channel_is_eof(channel));
     ssh_channel_send_eof(channel);
-    lastExitCode = ssh_channel_get_exit_status(channel);
+    int ok = ssh_channel_get_exit_state(channel, &lastExitCode, nullptr, nullptr);
+    if (ok != SSH_OK) {
+        qStdErr() << "Unable to get last exit code";
+        lastExitCode = 197;
+    }
     ssh_channel_close(channel);
     ssh_channel_free(channel);
     return (true);
@@ -448,7 +464,9 @@ QList<machine_t*> getMachineListFromHost(ssh_t* ssh) {
                                 for (const QJsonValue& v : backingList) {
                                     m->vmImageList << v.toObject().value("filename").toString();
                                 }
-                                m->vmBaseImageList << m->vmImageList.last();
+                                if (m->vmImageList.count()) {
+                                    m->vmBaseImageList << m->vmImageList.last();
+                                }
                             }
                         }
                     }
@@ -735,13 +753,11 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
         }
 
         if (m->type == "container") {
-            QStringList params = QStringList({"rsync", "-aAXpx", "-e", "\"ssh -T -o Compression=no -x\"", "--info=progress2", "--numeric-ids", "--no-devices",
-                                              "--delete", "--inplace", "--compress", "--compress-choice=zstd", "--compress-level=5", m->containerPath + "/",
-                                              "root@" + target->addr + ":" + dstDir});
+            QStringList params = QStringList({"rsync", "-aAXpxW", "-e", "\"ssh -T -o Compression=no -x\"", "--info=progress2", "--numeric-ids", "--no-devices",
+                                              "--delete", "--inplace", "--whole-file", m->containerPath + "/", "root@" + target->addr + ":" + dstDir});
 
             qStdOut() << "Backup to: " << target->name << ":" << dstDir << "\n";
             qStdOut().flush();
-
             runSshInteractive(m->ssh, params);
 
             if (lastExitCode != 0) {
@@ -763,7 +779,8 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
             }
             if (lastExitCode) {
                 ret = false;
-                qInfo() << "Backup of nspawn config file failed" << "/etc/systemd/nspawn/" + m->name + ".nspawn";
+                qInfo() << "Backup of nspawn config file failed"
+                        << "/etc/systemd/nspawn/" + m->name + ".nspawn";
             }
             runSsh(m->ssh, {"test", "-f", "/etc/systemd/system/systemd-nspawn@" + m->name + ".service.d/override.conf"});
             if (lastExitCode == 0) {
@@ -771,12 +788,14 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
                     runSsh(m->ssh, {"scp", "/etc/systemd/system/systemd-nspawn@" + m->name + ".service.d/override.conf",
                                     "root@" + target->addr + ":" + targetDir + "/" + m->name + "/"});
                 } else {
-                    runSsh(m->ssh, {"rsync", "-avpx", "-e", "\"ssh -T -o Compression=no -x\"", "/etc/systemd//system/systemd-nspawn@" + m->name + ".service.d/",
-                                    "root@" + target->addr + ":/etc/systemd/system/systemd-nspawn@" + m->name + ".backup.service.d/"});
+                    runSsh(m->ssh,
+                           {"rsync", "-avpxW", "-e", "\"ssh -T -o Compression=no -x\"", "/etc/systemd//system/systemd-nspawn@" + m->name + ".service.d/",
+                            "root@" + target->addr + ":/etc/systemd/system/systemd-nspawn@" + m->name + ".backup.service.d/"});
                 }
                 if (lastExitCode) {
                     ret = false;
-                    qInfo() << "Backup of nspawn service file failed" << "/etc/systemd/system/systemd-nspawn@" + m->name + ".service.d/override.conf";
+                    qInfo() << "Backup of nspawn service file failed"
+                            << "/etc/systemd/system/systemd-nspawn@" + m->name + ".service.d/override.conf";
                 }
             }
         } else {
@@ -788,9 +807,9 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
             }
             if (targetDir.length() == 0) {
                 for (QString img : m->vmImageList) {
-                    QStringList params = QStringList({"rsync", "-aAXpx", "-e", "\"ssh -T -o Compression=no -x\"", "--progress", "--numeric-ids", "--whole-file",
-                                                      "--no-devices", "--delete", "--inplace", "--compress", "--compress-choice=zstd", "--compress-level=5",
-                                                      img, "root@" + target->addr + ":" + img});
+                    QStringList params = QStringList({"rsync", "-aAXpxW", "-e", "\"ssh -T -o Compression=no -x\"", "--progress", "--numeric-ids",
+                                                      "--whole-file", "--no-devices", "--delete", "--inplace", "--compress", "--compress-choice=zstd",
+                                                      "--compress-level=5", img, "root@" + target->addr + ":" + img});
                     qStdOut() << "Backup image: " << img << "to:" << target->name << "\n";
                     qStdOut().flush();
                     runSshInteractive(m->ssh, params);
@@ -802,9 +821,9 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
                 }
             } else {
                 for (QString img : m->vmImageList) {
-                    QStringList params = QStringList({"rsync", "-aAXpx", "-e", "\"ssh -T -o Compression=no -x\"", "--progress", "--numeric-ids", "--whole-file",
-                                                      "--no-devices", "--delete", "--inplace", "--compress", "--compress-choice=zstd", "--compress-level=5",
-                                                      img, "root@" + target->addr + ":" + dstDir});
+                    QStringList params = QStringList({"rsync", "-aAXpxW", "-e", "\"ssh -T -o Compression=no -x\"", "--progress", "--numeric-ids",
+                                                      "--whole-file", "--no-devices", "--delete", "--inplace", "--compress", "--compress-choice=zstd",
+                                                      "--compress-level=5", img, "root@" + target->addr + ":" + dstDir});
                     qStdOut() << "Backup image: " << img << " to: " << target->name << ":" << dstDir << "\n";
                     qStdOut().flush();
                     runSshInteractive(m->ssh, params);
@@ -1057,12 +1076,13 @@ bool renameMachine(QString srcName, QString dstName, ssh_t* ssh) {
         if (lastExitCode == 0) {
             runSsh(ssh, {"test", "-f", "/etc/systemd/system/systemd-nspawn@" + srcName + ".service.d/override.conf"});
             if (lastExitCode == 0) {
-                runSsh(ssh, {"mv", "/etc/systemd//system/systemd-nspawn@" + srcName + ".service.d/",
+                runSsh(ssh, {"mv", "/etc/systemd/system/systemd-nspawn@" + srcName + ".service.d/",
                              "/etc/systemd/system/systemd-nspawn@" + dstName + ".backup.service.d/"});
                 if (lastExitCode != 0) {
                     qInfo() << "Unable to rename service.d";
                     return (-1);
                 }
+                runSsh(ssh, {"systemctl", "daemon-reload"});
             }
         } else {
             qInfo() << "Unable to rename container";
@@ -1140,7 +1160,9 @@ int processCommand(QStringList args) {
         QList<QStringList> table;
         QStringList header;
         header = QStringList{"MACHINE", "ADDR", "ARCH", "BRIDGES", "VM's (total,used,%)", "Containers", "Machines"};
-        std::sort(sshConnList.begin(), sshConnList.end(), [](ssh_t* m1, ssh_t* m2) { return (m1->name.toLower() < m2->name.toLower()); });
+        std::sort(sshConnList.begin(), sshConnList.end(), [](ssh_t* m1, ssh_t* m2) {
+            return (m1->name.toLower() < m2->name.toLower());
+        });
         for (auto s : sshConnList) {
             QStringList line;
             line << s->name << s->addr << s->arch << s->bridges.join(" ");
@@ -1219,7 +1241,7 @@ int processCommand(QStringList args) {
             }
         }
         printTable(table, header);
-    } else if (QStringList({"start", "stop", "kill", "enable", "disable", "remove", "restart", "spread", "backup", "exec"}).contains(command)) {
+    } else if (QStringList({"start", "stop", "kill", "enable", "disable", "remove", "restart", "spread", "backup", "backup-safe", "exec"}).contains(command)) {
         if (args.length()) {
             QStringList targetList = args.takeFirst().split(",", Qt::SkipEmptyParts);
             foreach (QString name, targetList) {
@@ -1255,39 +1277,170 @@ int processCommand(QStringList args) {
                             qInfo() << "Target is missing";
                             return (-1);
                         }
-                        QStringList tmp = args.first().split(":", Qt::SkipEmptyParts);
-                        QString targetDir;
-                        if (tmp.length() == 2) {
-                            targetDir = tmp[1];
-                        } else {
-                            qInfo() << "backup to selected host only";
-                        }
-                        ssh_t* t = findSsh(tmp[0]);
-                        if (t == nullptr) {
-                            qInfo() << "Target not exists:" << name;
-                            return (-1);
-                        }
+
+                        QStringList targetHosts = args.first().split(",", Qt::SkipEmptyParts);
                         qInfo() << "Backup:" << name;
                         bool isOnline = m->status == "ONLINE";
                         if (m->type == "container" || !isOnline) {
-                            backupMachine(m, t, targetDir);
+                            for (QString target : targetHosts) {
+                                QStringList tmp = target.split(":", Qt::SkipEmptyParts);
+                                QString targetDir;
+                                if (tmp.length() == 2) {
+                                    targetDir = tmp[1];
+                                } else {
+                                    qInfo() << "backup to selected host only";
+                                }
+                                ssh_t* t = findSsh(tmp[0]);
+                                if (t == nullptr) {
+                                    qInfo() << "Target not exists:" << name;
+                                    continue;
+                                }
+                                qStdOut() << "Backup 1st pass to: " << name << ":" << targetDir << "\n";
+                                qStdOut().flush();
+                                backupMachine(m, t, targetDir);
+                            }
                         }
                         if (isOnline) {
                             if (!askYes("Machine '" + name + "' is running. Stop to full offline backup?")) {
                                 continue;
                             }
                             timer2.start();
-                            qInfo() << "Live backup DONE. Stopping for offline aftersync";
+                            if (m->type == "container" || !isOnline) {
+                                qInfo() << "Live backup DONE. Stopping for offline aftersync";
+                            }
                             if (!stopMachine(m, true)) {
                                 qInfo() << "Unable to stop machine";
                                 return (-1);
                             }
-                            backupMachine(m, t, targetDir);
+                            for (QString target : targetHosts) {
+                                QStringList tmp = target.split(":", Qt::SkipEmptyParts);
+                                QString targetDir;
+                                if (tmp.length() == 2) {
+                                    targetDir = tmp[1];
+                                } else {
+                                    qInfo() << "backup to selected host only";
+                                }
+                                ssh_t* t = findSsh(tmp[0]);
+                                if (t == nullptr) {
+                                    qInfo() << "Target not exists:" << name;
+                                    continue;
+                                }
+                                qStdOut() << "Backup 2nd pass to: " << name << ":" << targetDir << "\n";
+                                qStdOut().flush();
+                                backupMachine(m, t, targetDir);
+                            }
                             startMachine(m);
                             qInfo() << "Backup DONE.";
                         } else {
                             qInfo() << "Backup DONE.";
                         }
+                        qInfo() << "Backup finished in:" << (static_cast<double>(timer.elapsed()) / 1000) << "seconds";
+                        if (timer2.elapsed() > 0) {
+                            qInfo() << "Downtine : " << (static_cast<double>(timer2.elapsed()) / 1000) << " seconds ";
+                        }
+                    } else if (command == "backup-safe") {
+                        QElapsedTimer timer, timer2;
+                        timer.start();
+                        if (args.length() < 1) {
+                            qInfo() << "Target is missing";
+                            return (-1);
+                        }
+                        QStringList targetHosts = args.first().split(",", Qt::SkipEmptyParts);
+                        QStringList checkServices;
+                        bool isOnline = m->status == "ONLINE";
+                        if (args.count() > 1 && isOnline) {
+                            checkServices = args[1].split(",", Qt::SkipEmptyParts);
+                        }
+                        qInfo() << "Backup-safe:" << name;
+                        if (m->type == "container") {
+                            for (QString target : targetHosts) {
+                                QStringList tmp = target.split(":", Qt::SkipEmptyParts);
+                                QString targetDir;
+                                if (tmp.length() == 2) {
+                                    targetDir = tmp[1];
+                                } else {
+                                    qInfo() << "backup to selected host only";
+                                }
+                                ssh_t* t = findSsh(tmp[0]);
+                                if (t == nullptr) {
+                                    qInfo() << "Target not exists:" << name;
+                                    continue;
+                                }
+                                qStdOut() << "Backup 1st pass to: " << name << ":" << targetDir << "\n";
+                                qStdOut().flush();
+                                backupMachine(m, t, targetDir);
+                            }
+                            if (checkServices.length()) {
+                                QStringList activeList;
+                                QJsonArray services =
+                                    QJsonDocument::fromJson(
+                                        runSsh(m->ssh, QStringList({"systemd-run", "--wait", "-P", "-q", "-M", m->name, "systemctl", "-o", "json"})))
+                                        .array();
+                                QSet<QString> active;
+                                // get list of running services
+                                for (const QJsonValue& jv : services) {
+                                    QJsonObject jo = jv.toObject();
+                                    QString u = jo.value("unit").toString();
+                                    QString a = jo.value("active").toString();
+                                    QString s = jo.value("sub").toString();
+                                    if (a == "active" && s == "running" && u.endsWith(".service")) {
+                                        active.insert(u);
+                                    }
+                                }
+                                // check problematic services
+                                for (const QString& service : checkServices) {
+                                    runSsh(m->ssh, QStringList({"systemd-run", "--wait", "-P", "-q", "-M", m->name, "systemctl", "is-active", service}));
+                                    if (lastExitCode == 0) {
+                                        qStdOut() << "Stopping " << service << "\n";
+                                        runSsh(m->ssh, QStringList({"systemd-run", "--wait", "-P", "-q", "-M", m->name, "systemctl", "stop", service}));
+                                        activeList << service;
+                                    }
+                                }
+                                // do 2nd pass with problematic services stopped
+                                if (activeList.length()) {
+                                    for (QString target : targetHosts) {
+                                        QStringList tmp = target.split(":", Qt::SkipEmptyParts);
+                                        QString targetDir;
+                                        if (tmp.length() == 2) {
+                                            targetDir = tmp[1];
+                                        } else {
+                                            qInfo() << "backup to selected host only";
+                                        }
+                                        ssh_t* t = findSsh(tmp[0]);
+                                        if (t == nullptr) {
+                                            qInfo() << "Target not exists:" << name;
+                                            continue;
+                                        }
+                                        qStdOut() << "Backup 2nd pass to: " << name << ":" << targetDir << "\n";
+                                        qStdOut().flush();
+                                        backupMachine(m, t, targetDir);
+                                    }
+                                    for (const QString& service : activeList) {
+                                        qStdOut() << "Starting " << service << "\n";
+                                        runSsh(m->ssh, QStringList({"systemd-run", "--wait", "-P", "-q", "-M", m->name, "systemctl", "start", service}));
+                                    }
+                                    // check if some services failed during backup (usually database down)
+                                    services =
+                                        QJsonDocument::fromJson(
+                                            runSsh(m->ssh, QStringList({"systemd-run", "--wait", "-P", "-q", "-M", m->name, "systemctl", "-a", "-o", "json"})))
+                                            .array();
+                                    for (QJsonValue jv : services) {
+                                        QJsonObject jo = jv.toObject();
+                                        QString u = jo.value("unit").toString();
+                                        QString s = jo.value("sub").toString();
+                                        if (active.contains(u) && s != "running") {
+                                            qStdOut() << "Starting probably failed " << u << "\n";
+                                            runSsh(m->ssh, QStringList({"systemd-run", "--wait", "-P", "-q", "-M", m->name, "systemctl", "start", u}));
+                                        }
+                                    }
+                                }
+                                // clear commands exited with non zero
+                                runSsh(m->ssh, QStringList({"systemd-run", "--wait", "-P", "-q", "-M", m->name, "systemctl", "-reset-failed"}));
+                            }
+                        } else {
+                            qStdErr() << "Machine" << name << "is not container";
+                        }
+                        qInfo() << "Backup DONE.";
                         qInfo() << "Backup finished in:" << (static_cast<double>(timer.elapsed()) / 1000)
                                 << "seconds, Downtine:" << (static_cast<double>(timer2.elapsed()) / 1000) << "seconds";
                     } else if (command == "spread") {
@@ -1412,9 +1565,9 @@ int processCommand(QStringList args) {
             return -1;
         }
 
-        //reload machine list
+        // reload machine list
         getMachineList();
-        //find again
+        // find again
         m = findMachine(name);
         // rename target and enable if needed
         if (m->type == "container") {

@@ -1,0 +1,34 @@
+BasedOnStyle: Google
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# Google default is 80, may be too narrow
+ColumnLimit: 160
+
+# Google uses 2 for continuation, match your indent
+ContinuationIndentWidth: 4
+
+# Keep Qt's signal/slot style readable
+AccessModifierOffset: -4
+
+# Pointer alignment (Google default is Left: int* x)
+PointerAlignment: Left
+
+# Brace style (Google uses Attach)
+BreakBeforeBraces: Attach
+
+# Unpack short lambdas too
+AllowShortLambdasOnASingleLine: None
+
+# Unpack short if statements
+AllowShortIfStatementsOnASingleLine: Never
+
+# Unpack short loops
+AllowShortLoopsOnASingleLine: false
+
+# Unpack single line functions
+AllowShortFunctionsOnASingleLine: None
+
+SortIncludes: Never
+
