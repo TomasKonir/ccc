@@ -36,6 +36,7 @@
     "DIR using rsync)\n"                                                                    \
     "  backup-safe  CONTAINER[s] MACHINE:DIR(s) SERVICE[s] (backup container or VM to dst " \
     "DIR using rsync, and stop services before second pass)\n"                              \
+    "  backup-list  MACHINE:DIR (list backups)\n"                                           \
     "  move         CONTAINER    | VM    TARGET      (move container to TARGET and "        \
     "rename old container as CONTAINER.backup)\n"                                           \
     "  clone        CONTAINER            CLONE_NAME  (clone container as new)\n"            \
@@ -765,7 +766,7 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
             if (lastExitCode == 0) {
                 QStringList excluded = QString::fromUtf8(nobackup).split("\n", Qt::SkipEmptyParts);
                 params << "--delete-excluded";
-                for(const QString &s : excluded){
+                for (const QString& s : excluded) {
                     qStdOut() << "Excluding: " << s << "\n";
                     params << "--exclude=" + s;
                 }
@@ -1522,6 +1523,53 @@ int processCommand(QStringList args) {
         } else {
             qInfo() << "Machine name missing for start";
         }
+    } else if (command == "backup-list") {
+        if (args.length() != 1) {
+            qInfo() << "Backup-list needs machine:folder parameter";
+            return (-1);
+        }
+        QStringList parm = args.takeFirst().split(":");
+        if (parm.length() != 2) {
+            qInfo() << "Invalid parameter format";
+            return (-1);
+        }
+        QString name = parm.takeFirst();
+        QString path = parm.takeFirst();
+        ssh_t* t = findSsh(name);
+        if (t == nullptr) {
+            qInfo() << "Machine lookup error:" << name << path;
+            return (-1);
+        }
+        QByteArray res = runSsh(t, {"ls", "--color=none", path});
+        QStringList list = QString::fromUtf8(res).split("\n", Qt::SkipEmptyParts);
+        QStringList header = QStringList{"MACHINE", "TYPE"};
+        QList<QStringList> table;
+        if (showExtended) {
+            header = QStringList{"MACHINE", "TYPE", "SIZE", "DATE"};
+        }
+        for (const QString& s : list) {
+            QString type;
+            runSsh(t, {"test", "-d", path + "/" + s + "/root"});
+            if (lastExitCode == 0) {
+                type = "container";
+            } else {
+                runSsh(t, {"test", "-d", path + "/" + s + "/images"});
+                if (lastExitCode == 0) {
+                    type = "vm";
+                }
+            }
+            if (type.length()) {
+                if (showExtended) {
+                    QStringList du = QString::fromUtf8(runSsh(t, {"du", "-sh", "--time", path + "/" + s})).split('\t');
+                    if (du.count() > 1) {
+                        table << QStringList({s, type, du[0], du[1]});
+                    }
+                } else {
+                    table << QStringList({s, type});
+                }
+            }
+        }
+        printTable(table, header);
     } else if (command == "clone") {
         if (args.length() != 2) {
             qInfo() << "Clone needs both source and clone_name parameters";
