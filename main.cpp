@@ -16,10 +16,11 @@
 #include <QThread>
 #include <QtConcurrent>
 
-#define HELP_BASE " [-c CONFIG] [-a] [-y] [-n] [-e]\n"
+#define HELP_BASE " [-c CONFIG] [-a] [-y] [-n] [-e] [--container] [--vm]\n"
 #define HELP_COMMANDS                                                                       \
     "  help         (self explanable), [s] and (s) are lists, separated by ',' \n"          \
     "  list         (default command) \n"                                                   \
+    "  list-simple  (only name per line, no colors) \n"                                     \
     "  hosts        (basic hosts info) \n"                                                  \
     "  start        CONTAINER[s] | VM[s]\n"                                                 \
     "  stop         CONTAINER[s] | VM[s]\n"                                                 \
@@ -95,9 +96,11 @@ QList<ssh_t*> sshConnList;
 QList<machine_t*> machineList;
 QString sshKeyPath;
 bool showBackups = false;
-bool showextended = false;
+bool showExtended = false;
 bool dontAsk = false;
 bool allNo = false;
+bool listContainers = true;
+bool listVMs = true;
 static uint32_t lastExitCode = 0;
 
 QByteArray runSsh(ssh_t* ssh, QStringList params, bool interactive = false, QByteArray data = QByteArray());
@@ -733,9 +736,11 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
                 return (false);
             }
 
-            runSsh(m->ssh, {"ssh", target->addr, "test", "-d", "/"});
+            QByteArray res = runSsh(m->ssh, {"ssh", target->addr, "test", "-d", "/"});
             if (lastExitCode != 0) {
-                qInfo() << "Unable to connect from source:" << m->ssh->name << "to target:" << target->name;
+                qInfo() << "Backup dir not exists or unable to connect from source:" << m->ssh->name << "to target:" << target->name;
+                qInfo() << m->ssh->addr << target->addr;
+                qInfo() << res;
                 return (false);
             }
 
@@ -754,8 +759,18 @@ bool backupMachine(machine_t* m, ssh_t* targetSsh = nullptr, QString targetDir =
 
         if (m->type == "container") {
             QStringList params = QStringList({"rsync", "-aAXpxW", "-e", "\"ssh -T -o Compression=no -x\"", "--info=progress2", "--numeric-ids", "--no-devices",
-                                              "--delete", "--inplace", "--whole-file", m->containerPath + "/", "root@" + target->addr + ":" + dstDir});
+                                              "--delete", "--inplace", "--whole-file"});
 
+            QByteArray nobackup = runSsh(m->ssh, {"cat", m->containerPath + "/NOBACKUP"});
+            if (lastExitCode == 0) {
+                QStringList excluded = QString::fromUtf8(nobackup).split("\n", Qt::SkipEmptyParts);
+                params << "--delete-excluded";
+                for(const QString &s : excluded){
+                    qStdOut() << "Excluding: " << s << "\n";
+                    params << "--exclude=" + s;
+                }
+            }
+            params << m->containerPath + "/" << "root@" + target->addr + ":" + dstDir;
             qStdOut() << "Backup to: " << target->name << ":" << dstDir << "\n";
             qStdOut().flush();
             runSshInteractive(m->ssh, params);
@@ -1179,13 +1194,16 @@ int processCommand(QStringList args) {
             table << line;
         }
         printTable(table, header);
-    } else if (command == "list") {
+    } else if (command == "list" || command == "list-simple") {
         QList<QStringList> table;
         QStringList header;
-        if (showextended) {
-            header = QStringList{"MACHINE", "HOST", "TYPE", "STATUS", "ADDRESSES", "OS", "ARCH", "INTERFACES", "PATH/DRIVE"};
-        } else {
-            header = QStringList{"MACHINE", "HOST", "TYPE", "STATUS", "ADDRESSES", "OS"};
+        bool listSimple = command == "list-simple";
+        if (!listSimple) {
+            if (showExtended) {
+                header = QStringList{"MACHINE", "HOST", "TYPE", "STATUS", "ADDRESSES", "OS", "ARCH", "INTERFACES", "PATH/DRIVE"};
+            } else {
+                header = QStringList{"MACHINE", "HOST", "TYPE", "STATUS", "ADDRESSES", "OS"};
+            }
         }
         std::sort(machineList.begin(), machineList.end(), [](machine_t* m1, machine_t* m2) {
             if (m1->name.toLower() == m2->name.toLower()) {
@@ -1207,40 +1225,52 @@ int processCommand(QStringList args) {
             }
             if (m->type == "container") {
                 path << m->containerPath;
-            } else {
-                path = m->vmBaseImageList;
-            }
-            int lines = qMax(path.count(), addresses.count());
-            if (showextended) {
-                for (int i = 0; i < lines; i++) {
-                    QStringList row;
-                    QString a;
-                    QString p;
-                    QString ii;
-                    QString blank;
-                    if (addresses.count()) {
-                        a = addresses.takeFirst();
-                    }
-                    if (path.count()) {
-                        p = path.takeFirst();
-                    }
-                    if (interfaces.count()) {
-                        ii = interfaces.takeFirst();
-                    }
-                    if (i == 0) {
-                        row << m->name << m->ssh->name << m->type << m->status << a << m->os << m->ssh->arch << ii << p;
-                    } else {
-                        row << blank << blank << blank << blank << a << blank << blank << ii << p;
-                    }
-                    table << row;
+                if (!listContainers) {
+                    continue;
                 }
             } else {
-                QStringList row;
-                row << m->name << m->ssh->name << m->type << m->status << addresses.join(" ") << m->os;
-                table << row;
+                path = m->vmBaseImageList;
+                if (!listVMs) {
+                    continue;
+                }
+            }
+            int lines = qMax(path.count(), addresses.count());
+            if (listSimple) {
+                qStdOut() << m->name << "\n";
+            } else {
+                if (showExtended) {
+                    for (int i = 0; i < lines; i++) {
+                        QStringList row;
+                        QString a;
+                        QString p;
+                        QString ii;
+                        QString blank;
+                        if (addresses.count()) {
+                            a = addresses.takeFirst();
+                        }
+                        if (path.count()) {
+                            p = path.takeFirst();
+                        }
+                        if (interfaces.count()) {
+                            ii = interfaces.takeFirst();
+                        }
+                        if (i == 0) {
+                            row << m->name << m->ssh->name << m->type << m->status << a << m->os << m->ssh->arch << ii << p;
+                        } else {
+                            row << blank << blank << blank << blank << a << blank << blank << ii << p;
+                        }
+                        table << row;
+                    }
+                } else {
+                    QStringList row;
+                    row << m->name << m->ssh->name << m->type << m->status << addresses.join(" ") << m->os;
+                    table << row;
+                }
             }
         }
-        printTable(table, header);
+        if (!listSimple) {
+            printTable(table, header);
+        }
     } else if (QStringList({"start", "stop", "kill", "enable", "disable", "remove", "restart", "spread", "backup", "backup-safe", "exec"}).contains(command)) {
         if (args.length()) {
             QStringList targetList = args.takeFirst().split(",", Qt::SkipEmptyParts);
@@ -1396,6 +1426,7 @@ int processCommand(QStringList args) {
                                         activeList << service;
                                     }
                                 }
+                                timer2.start();
                                 // do 2nd pass with problematic services stopped
                                 if (activeList.length()) {
                                     for (QString target : targetHosts) {
@@ -1629,17 +1660,16 @@ int main(int argc, char* argv[]) {
         return (0);
     }
     args.takeFirst();  // remove program name
-    if (args.contains("-y")) {
-        dontAsk = true;
-        args.removeAll("-y");
+    dontAsk = args.contains("-y");
+    allNo = args.contains("-n");
+    showExtended = args.contains("-e");
+    listContainers = !args.contains("--vm");
+    listVMs = !args.contains("--container");
+    if (listContainers == false && listVMs == false) {
+        listContainers = listVMs = true;
     }
-    if (args.contains("-n")) {
-        allNo = true;
-        args.removeAll("-n");
-    }
-    if (args.contains("-e")) {
-        showextended = true;
-        args.removeAll("-e");
+    for (const QString& p : {"-y", "-n", "-e", "--container", "--vm"}) {
+        args.removeAll(p);
     }
 
     QString config = QProcessEnvironment::systemEnvironment().value("HOME", "") + "/.ccc.json";
